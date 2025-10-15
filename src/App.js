@@ -1,5 +1,4 @@
-// src/App.js
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { ethers } from 'ethers';
 
 // Адреса контрактов (из твоего деплоя)
@@ -21,7 +20,6 @@ const STAKING_ABI = [
 ];
 
 function App() {
-  const [provider, setProvider] = useState(null);
   const [signer, setSigner] = useState(null);
   const [account, setAccount] = useState(null);
   const [aetxBalance, setAetxBalance] = useState("0");
@@ -30,113 +28,164 @@ function App() {
 
   // Подключение кошелька
   const connectWallet = async () => {
-    if (window.ethereum) {
-      try {
-        await window.ethereum.request({ method: "eth_requestAccounts" });
-        const prov = new ethers.BrowserProvider(window.ethereum);
-        const sign = await prov.getSigner();
-        const addr = await sign.getAddress();
-
-        setProvider(prov);
-        setSigner(sign);
-        setAccount(addr);
-
-        // Переключи на Arbitrum Sepolia
-        try {
-          await window.ethereum.request({
-            method: 'wallet_switchEthereumChain',
-            params: [{ chainId: '0x66eee' }], // 421614 в hex
-          });
-        } catch (switchError) {
-          if (switchError.code === 4902) {
-            alert("Please add Arbitrum Sepolia network manually in MetaMask");
-          }
-        }
-      } catch (err) {
-        console.error(err);
-      }
-    } else {
+    if (!window.ethereum) {
       alert("Please install MetaMask!");
+      return;
+    }
+
+    try {
+      await window.ethereum.request({ method: "eth_requestAccounts" });
+      const prov = new ethers.BrowserProvider(window.ethereum);
+      const sign = await prov.getSigner();
+      const addr = await sign.getAddress();
+
+      setSigner(sign);
+      setAccount(addr);
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  // Добавить сеть Arbitrum Sepolia
+  const addArbitrumSepolia = async () => {
+    if (!window.ethereum) {
+      alert("Please install MetaMask!");
+      return;
+    }
+
+    try {
+      await window.ethereum.request({
+        method: 'wallet_addEthereumChain',
+        params: [{
+          chainId: '0x66eee', // 421614 в hex
+          chainName: 'Arbitrum Sepolia',
+          nativeCurrency: {
+            name: 'SepoliaETH',
+            symbol: 'ETH',
+            decimals: 18,
+          },
+          rpcUrls: ['https://sepolia-rollup.arbitrum.io/rpc'],
+          blockExplorerUrls: ['https://sepolia.arbiscan.io'],
+        }],
+      });
+    } catch (error) {
+      console.error("Failed to add network:", error);
+      alert("Failed to add Arbitrum Sepolia. Please add it manually in MetaMask.");
     }
   };
 
   // Получение данных
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     if (!signer || !account) return;
 
-    const aetxContract = new ethers.Contract(AETX_ADDRESS, AETX_ABI, signer);
-    const stakingContract = new ethers.Contract(STAKING_ADDRESS, STAKING_ABI, signer);
+    try {
+      const aetxContract = new ethers.Contract(AETX_ADDRESS, AETX_ABI, signer);
+      const stakingContract = new ethers.Contract(STAKING_ADDRESS, STAKING_ABI, signer);
 
-    const balance = await aetxContract.balanceOf(account);
-    const stake = await stakingContract.myStake();
-    const reward = await stakingContract.pendingReward(account);
+      const balance = await aetxContract.balanceOf(account);
+      const stake = await stakingContract.myStake();
+      const reward = await stakingContract.pendingReward(account);
 
-    setAetxBalance(ethers.formatEther(balance));
-    setStaked(ethers.formatEther(stake));
-    setPendingReward(ethers.formatEther(reward));
-  };
+      setAetxBalance(ethers.formatEther(balance));
+      setStaked(ethers.formatEther(stake));
+      setPendingReward(ethers.formatEther(reward));
+    } catch (err) {
+      console.error("Fetch error:", err);
+    }
+  }, [signer, account]);
 
   // Стейк
   const handleStake = async (amount) => {
-    if (!signer) return;
-    const aetxContract = new ethers.Contract(AETX_ADDRESS, AETX_ABI, signer);
-    const stakingContract = new ethers.Contract(STAKING_ADDRESS, STAKING_ABI, signer);
+    if (!signer || !amount) return;
 
-    // Approve
-    const tx1 = await aetxContract.approve(STAKING_ADDRESS, ethers.parseEther(amount));
-    await tx1.wait();
+    try {
+      const aetxContract = new ethers.Contract(AETX_ADDRESS, AETX_ABI, signer);
+      const stakingContract = new ethers.Contract(STAKING_ADDRESS, STAKING_ABI, signer);
 
-    // Stake
-    const tx2 = await stakingContract.stake(ethers.parseEther(amount));
-    await tx2.wait();
+      // Approve
+      const tx1 = await aetxContract.approve(STAKING_ADDRESS, ethers.parseEther(amount));
+      await tx1.wait();
 
-    fetchData();
+      // Stake
+      const tx2 = await stakingContract.stake(ethers.parseEther(amount));
+      await tx2.wait();
+
+      fetchData();
+    } catch (err) {
+      console.error("Stake error:", err);
+      alert("Staking failed. Make sure you have enough AETX and approved the transaction.");
+    }
   };
 
   // Claim
   const handleClaim = async () => {
     if (!signer) return;
-    const stakingContract = new ethers.Contract(STAKING_ADDRESS, STAKING_ABI, signer);
-    const tx = await stakingContract.claimRewards();
-    await tx.wait();
-    fetchData();
+
+    try {
+      const stakingContract = new ethers.Contract(STAKING_ADDRESS, STAKING_ABI, signer);
+      const tx = await stakingContract.claimRewards();
+      await tx.wait();
+      fetchData();
+    } catch (err) {
+      console.error("Claim error:", err);
+      alert("Claim failed. Try again later.");
+    }
   };
 
   useEffect(() => {
     if (account) fetchData();
-  }, [account]);
+  }, [account, fetchData]);
 
   return (
     <div style={{ padding: "2rem", fontFamily: "sans-serif", maxWidth: "600px", margin: "0 auto" }}>
-    {/* Логотип */}
-    <img 
-      src="/logo.jpg" 
-      alt="Aetherix Logo" 
-      style={{ width: "150px", marginBottom: "1rem", borderRadius: "8px" }}
-    />
+      {/* Логотип */}
+      <img 
+        src="/logo.jpg" 
+        alt="Aetherix Logo" 
+        style={{ width: "150px", marginBottom: "1rem", borderRadius: "8px" }}
+      />
 
-    <h1>🌌 Aetherix</h1>
-    <p>Stake AETX → Earn USDT (5% APY)</p>
+      <h1>🌌 Aetherix</h1>
+      <p>Stake AETX → Earn USDT (5% APY)</p>
 
       {!account ? (
-        <button onClick={connectWallet} style={{ padding: "10px 20px", fontSize: "16px" }}>
-          Connect Wallet
-        </button>
+        <div>
+          <button onClick={connectWallet} style={{ padding: "10px 20px", fontSize: "16px" }}>
+            Connect Wallet
+          </button>
+          <br />
+          <button 
+            onClick={addArbitrumSepolia} 
+            style={{ 
+              marginTop: "10px", 
+              padding: "8px 16px", 
+              fontSize: "14px", 
+              backgroundColor: "#f0f0f0", 
+              border: "1px solid #ccc",
+              cursor: "pointer"
+            }}
+          >
+            Add Arbitrum Sepolia Network
+          </button>
+        </div>
       ) : (
         <div>
           <p>Account: {account.slice(0, 6)}...{account.slice(-4)}</p>
           <p>AETX Balance: {parseFloat(aetxBalance).toFixed(2)}</p>
           <p>Staked: {parseFloat(staked).toFixed(2)}</p>
-          <p>Pending Reward: {parseFloat(pendingReward).toFixed(4)} USDT</p>
+          <p>Pending Reward: {parseFloat(pendingReward).toFixed(6)} USDT</p>
 
           <div style={{ marginTop: "1rem" }}>
-            <input id="stake-amount" placeholder="Amount to stake" />
+            <input id="stake-amount" placeholder="Amount to stake (AETX)" style={{ padding: "8px", marginRight: "8px" }} />
             <button onClick={() => handleStake(document.getElementById("stake-amount").value)}>
               Stake AETX
             </button>
           </div>
 
-          <button onClick={handleClaim} style={{ marginTop: "1rem" }}>
+          <button 
+            onClick={handleClaim} 
+            style={{ marginTop: "1rem", padding: "10px 20px" }}
+          >
             Claim USDT Rewards
           </button>
         </div>
